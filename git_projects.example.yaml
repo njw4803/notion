@@ -1,0 +1,48 @@
+# 브랜치 → 프로젝트 매핑 (복사: cp git_projects.example.yaml git_projects.yaml)
+#
+# 기본 실행: update=always + checkout 브랜치가 branch/branches 와 일치하는 규칙만
+# 과거 일괄: ./notion/update_detail_on_tag.sh --all --rebuild-compressed
+#
+# branch / branches : 커밋 수집 ref (저장소 checkout 또는 --all 시 branches[0])
+# repo              : git 저장소 로컬 경로 (.. = notion/ 바로 위 폴더)
+# md                : 갱신할 경력 MD (content/Projects/...)
+# if_missing        : skip(기본)=MD 없으면 건너뜀 | create=MD 골격 생성
+# update            : always(기본)=주간·일반 실행 | manual=--all 일 때만 | never=git 갱신 안 함
+# template          : syncbox | generic
+# since / until     : 생략 시 MD frontmatter period_start/end 사용
+
+projects:
+  # 현재 프로젝트 — 주간 launchd·일반 실행에 포함
+  - branch: develop-main
+    repo: ..
+    md: content/Projects/(주)도로시 Solution SyncBox.md
+    template: syncbox
+    update: always
+    if_missing: skip
+
+  # 과거 프로젝트 — --all --rebuild-compressed 로 1회(또는 필요 시)만 일괄 반영
+  - branches: [develop, main]
+    repo: /path/to/nexus-repo
+    md: content/Projects/Nexus Solution 고도화 작업.md
+    template: generic
+    update: manual
+    if_missing: skip
+
+  # Notion import·수동 MD만 유지 (git 커밋으로 덮어쓰지 않음)
+  # - branches: [main]
+  #   repo: /path/to/old-repo
+  #   md: content/Projects/옛 프로젝트.md
+  #   update: never
+  #   if_missing: skip
+
+  # 신규 프로젝트 (MD 없을 때 생성)
+  # - branch: feature/new-client
+  #   repo: /path/to/client-repo
+  #   md: content/Projects/신규 클라이언트 프로젝트.md
+  #   update: always
+  #   if_missing: create
+  #   project_name: 신규 클라이언트 프로젝트
+  #   affiliation: (주)도로시
+  #   one_liner: B2B 솔루션 백엔드 개발
+  #   period_start: "2025-01-01"
+  #   template: generic

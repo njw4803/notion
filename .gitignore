@@ -1,13 +1,14 @@
-# IDE
+# IDE settings
 .idea/
 
-# Python
+# Python virtual environment
 .venv/
 __pycache__/
 *.pyc
 
-# Environment
+# Environment variables
 .env
+config.env
 
 # State files
 *.json

@@ -1,0 +1,7 @@
+projects:
+  - branch: develop-main
+    repo: ..
+    md: content/Projects/(주)도로시 Solution SyncBox.md
+    template: syncbox
+    update: always
+    if_missing: skip
