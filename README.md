@@ -14,3 +14,4 @@ cp notion/config.example.env notion/.env
 cp notion/git_projects.example.yaml notion/git_projects.yaml
 ```
 # notion
+# notion
