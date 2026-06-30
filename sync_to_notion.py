@@ -7,6 +7,7 @@ from typing import Optional
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import frontmatter
@@ -55,20 +56,49 @@ def headers():
     }
 
 
+# 일시적 네트워크 지연(ReadTimeout)·429·5xx에 한 번의 실패로 동기화가 깨지지 않도록 재시도한다.
+NOTION_TIMEOUT = 120
+NOTION_MAX_RETRIES = 3
+NOTION_RETRY_BACKOFF = 2  # 초 (지수 백오프 기준)
+
+
+def _notion_request(method, path, request_headers, **kwargs):
+    last_error = None
+    for attempt in range(1, NOTION_MAX_RETRIES + 1):
+        try:
+            response = requests.request(
+                method, f"{NOTION_API}{path}", headers=request_headers, timeout=NOTION_TIMEOUT, **kwargs
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_error = exc
+            if attempt < NOTION_MAX_RETRIES:
+                wait = NOTION_RETRY_BACKOFF * (2 ** (attempt - 1))
+                print(f"[notion] {method} {path} 네트워크 오류({exc.__class__.__name__}) — {wait}s 후 재시도 {attempt}/{NOTION_MAX_RETRIES - 1}")
+                time.sleep(wait)
+                continue
+            raise
+        # 429(rate limit)/5xx는 재시도
+        if response.status_code == 429 or response.status_code >= 500:
+            if attempt < NOTION_MAX_RETRIES:
+                retry_after = response.headers.get("Retry-After")
+                wait = float(retry_after) if retry_after else NOTION_RETRY_BACKOFF * (2 ** (attempt - 1))
+                print(f"[notion] {method} {path} → {response.status_code} — {wait}s 후 재시도 {attempt}/{NOTION_MAX_RETRIES - 1}")
+                time.sleep(wait)
+                continue
+        if not response.ok:
+            raise RuntimeError(f"Notion API {method} {path} → {response.status_code}: {response.text}")
+        return response.json() if response.text else {}
+    raise last_error if last_error else RuntimeError(f"Notion API {method} {path} 재시도 실패")
+
+
 def notion_request(method, path, **kwargs):
-    response = requests.request(method, f"{NOTION_API}{path}", headers=headers(), timeout=60, **kwargs)
-    if not response.ok:
-        raise RuntimeError(f"Notion API {method} {path} → {response.status_code}: {response.text}")
-    return response.json() if response.text else {}
+    return _notion_request(method, path, headers(), **kwargs)
 
 
 def notion_request_version(method, path, version: str, **kwargs):
     request_headers = headers()
     request_headers["Notion-Version"] = version
-    response = requests.request(method, f"{NOTION_API}{path}", headers=request_headers, timeout=60, **kwargs)
-    if not response.ok:
-        raise RuntimeError(f"Notion API {method} {path} → {response.status_code}: {response.text}")
-    return response.json() if response.text else {}
+    return _notion_request(method, path, request_headers, **kwargs)
 
 
 def format_uuid(page_id: str) -> str:
@@ -451,15 +481,45 @@ def append_single_block(parent_id: str, block: dict):
         append_single_block(block_id, child)
 
 
+def _append_payload_batch(parent_id: str, payloads: list):
+    # Notion children append는 호출당 최대 100개. 요청 수를 줄여 타임아웃 노출을 낮춘다.
+    for i in range(0, len(payloads), 100):
+        chunk = payloads[i:i + 100]
+        notion_request(
+            "PATCH",
+            f"/blocks/{format_uuid(parent_id)}/children",
+            json={"children": chunk},
+        )
+
+
 def append_blocks(parent_id: str, blocks: list):
+    # children 없는 블록은 100개씩 배치로, children 있는 블록은 개별(재귀)로 추가한다(순서 보존).
+    buffer = []
     for block in blocks:
-        append_single_block(parent_id, block)
+        if block.get("children"):
+            if buffer:
+                _append_payload_batch(parent_id, buffer)
+                buffer = []
+            append_single_block(parent_id, block)
+        else:
+            buffer.append({key: value for key, value in block.items() if key != "children"})
+    if buffer:
+        _append_payload_batch(parent_id, buffer)
 
 
 def replace_child_blocks(parent_id: str, blocks: list):
+    # 새 블록이 비정상적으로 비어 있으면 기존 페이지 내용을 보호하기 위해 아무것도 하지 않는다.
+    if not blocks:
+        print(f"[notion] replace_child_blocks skip — 새 블록이 비어 있어 기존 내용 보존: {parent_id}")
+        return
+
     existing = list_child_blocks(parent_id)
-    delete_blocks([block["id"] for block in existing])
+
+    # append-후-delete 순서: 새 블록을 먼저 추가하고 성공하면 기존 블록을 삭제한다.
+    # 이렇게 하면 추가 중 실패(예: Notion API 타임아웃)해도 기존 내용이 사라지지 않는다.
+    # (실패 시 최악의 경우 기존+신규가 잠시 공존할 수 있으나 데이터 유실은 없음)
     append_blocks(parent_id, blocks)
+    delete_blocks([block["id"] for block in existing])
 
 
 def discover_databases():
