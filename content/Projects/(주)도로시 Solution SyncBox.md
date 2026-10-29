@@ -40,22 +40,23 @@ Project Description
 - TABLE_CHART headerGroups·pivotColumn·Numbers 설정 DTO, 차트 필터 BASIC/ADVANCED/RANGE 처리, 필터·데이터셋 오류 i18n 메시지 반환, JwtAuthorizationFilter downstream 예외 전파 수정
 - Excel 2003 XML Spreadsheet(.xls) SAX 파서 기반 미리보기·반입, JDBC Import alias·MariaDB 메타데이터 버그 수정
 - Spark 3.5 stage-job 매핑 수정, Chart Spark pending 로그 보강, APF/SFTP 운영 이슈 대응
+- Spring Boot + MyBatis + PostgreSQL 레이어드 아키텍처 기반 리포트·라이브러리·프로젝트(APF)·Spark 실행 도메인 API 운영
 
 ### 프로젝트 상세 내용
 
 **사용 기술 및 솔루션**
 <!-- AUTO:stack -->
 - 언어: Java 11 (릴리스 tag v1.0.0)
-- 프레임워크: Spring Boot, Spring Security, MyBatis
 - 서버/인프라: Docker, PostgreSQL, Redis, Apache Spark 3.5.0, Hadoop(HDFS)
-- CI/자동화: GitHub Actions, Python, Playwright, Notion API
+- 프레임워크: Spring Boot, Spring Security, MyBatis
 - Spring Boot 2.7.6 + MyBatis + PostgreSQL 레이어드 아키텍처
+- CI/자동화: GitHub Actions, Python, Playwright, Notion API
 - Redis: syncbox.redis.enabled=false — true 시 Report·Embed 토큰 Redis, false 시 인메모리 구현체 선택
 <!-- /AUTO:stack -->
 
 ### 프로젝트를 통해 얻은 것
 
 <!-- AUTO:learnings -->
-**SyncBox 백엔드·플랫폼 개발**
-develop-main push 기반 GitHub Actions 자동 배포와 FE·BE SemVer tag 연동 매뉴얼 자동화를 구축해, 코드 변경부터 배포·사용자 문서 반영까지 end-to-end 흐름을 연결하는 방법을 익혔습니다. 리포트·Embed 도메인에서 Redis TTL 캐싱·환경별 빈 분리, 외부 Embed 인증, 차트 필터·i18n 오류 응답을 설계·운영했고, JWT 필터가 비즈니스 예외를 401로 오인하던 운영 장애처럼 증상과 원인이 어긋나는 이슈를 추적·해결하는 경험을 쌓았습니다. Excel SAX 스트리밍 Import, JDBC 다중 DB 연동, Spark stage-job 매핑 등 대용량 데이터 수집·가공 파이프라인을 운영하며 성능·안정성·로그 가시성을 함께 맞추는 법을 배웠습니다.
+**(주)도로시 Solution SyncBox**
+develop-main push 기반 GitHub Actions 자동 배포와 FE·BE SemVer tag 연동 매뉴얼 자동화를 구축해, 코드 변경부터 배포·사용자 문서 반영까지 end-to-end 흐름을 연결하는 방법을 익혔습니다. 리포트·Embed 도메인에서 Redis TTL 캐싱·환경별 빈 분리, 외부 Embed 인증, 차트 필터·i18n 오류 응답을 설계·운영했고, JWT 필터가 비즈니스 예외를 401로 오인하던 운영 장애처럼 증상과 원인이 어긋나는 이슈를 추적·해결하는 경험을 쌓았습니다. Excel SAX 스트리밍 Import, JDBC 다중 DB 연동, Spark stage-job 매핑 등 대용량 데이터 수집·가공 파이프라인을 운영하며 성능·안정성·로그 가시성을 함께 맞추는 법을 배웠습니다. Spring Boot + MyBatis + PostgreSQL 레이어드 구조와 ResultException 기반 i18n 패턴으로 도메인 API를 일관되게 확장하는 백엔드 설계 역량을 키웠습니다.
 <!-- /AUTO:learnings -->

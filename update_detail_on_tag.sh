@@ -1,6 +1,6 @@
 #!/bin/sh
 # 본인 커밋 → SyncBox 경력 MD 상세·배운 점 자동 갱신 (launchd 주간: 월 10:30)
-# 대상 브랜치: 항상 현재 checkout 브랜치
+# 대상 브랜치: git_projects.yaml 의 branch 규칙 (checkout 브랜치와 무관)
 set -eu
 
 DIR="$(cd "$(dirname "$0")" && pwd)"

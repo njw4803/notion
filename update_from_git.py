@@ -3,7 +3,7 @@
 git 저장소 커밋을 읽어 경력 MD(Projects)를 갱신합니다.
 
 - git_projects.yaml 에 프로젝트·저장소 경로 등록 (과거 프로젝트는 update: manual)
-- 대상 브랜치: 각 저장소의 현재 checkout 브랜치 (--all 시 branches 규칙)
+- 대상 브랜치: git_projects.yaml 의 branch/branches 규칙 (지금 checkout 된 브랜치와 무관하게 읽는다)
 - --all --rebuild-compressed 로 update=manual·always 프로젝트 일괄 압축
 """
 
@@ -244,14 +244,42 @@ def create_project_md(md_path: Path, entry: dict[str, Any]) -> None:
     md_path.write_text(frontmatter.dumps(frontmatter.Post(body, **meta)), encoding="utf-8")
 
 
+def resolve_ref(repo_root: Path, branch: str) -> str | None:
+    """브랜치 이름을 실제로 읽을 수 있는 ref 로 바꾼다.
+
+    로컬에 없으면 origin/ 으로 한 번 더 본다 (clone 직후처럼 로컬 브랜치가 없는 경우).
+    읽기만 하므로 checkout 은 필요 없다.
+    """
+    for ref in (branch, f"origin/{branch}"):
+        try:
+            if run_git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=repo_root):
+                return ref
+        except RuntimeError:
+            continue
+    return None
+
+
 def resolve_branch_rule(entry: dict[str, Any], repo_root: Path, process_all: bool) -> str | None:
+    """이 프로젝트의 커밋을 어느 브랜치에서 읽을지 정한다.
+
+    규칙에 브랜치가 적혀 있으면 **지금 checkout 된 브랜치와 무관하게** 그 브랜치를 읽는다.
+    git log 는 checkout 없이도 임의의 ref 를 읽을 수 있고, 주간 스케줄이 도는 월요일 아침에
+    마침 feature 브랜치에 있었다는 이유로 이력 갱신이 통째로 건너뛰어지면 안 되기 때문이다.
+    (2026-09-21 실제로 건너뛰었다.)
+
+    checkout 이 규칙 안에 있으면 그대로 쓴다 — 여러 브랜치를 적어둔 경우 지금 보고 있는
+    브랜치를 우선한다는 뜻이다.
+    """
     branches = entry_branches(entry)
     checkout = checkout_branch(repo_root)
     if not branches:
         return checkout if process_all else None
-    if process_all:
-        return checkout if checkout in branches else branches[0]
-    return checkout if checkout in branches else None
+
+    for candidate in ([checkout] if checkout in branches else []) + branches:
+        ref = resolve_ref(repo_root, candidate)
+        if ref:
+            return ref
+    return None
 
 
 def ensure_project_md(entry: dict[str, Any], dry_run: bool) -> Path | None:
@@ -295,12 +323,15 @@ def build_project_configs(process_all: bool, dry_run: bool = False) -> list[Proj
         log_branch = resolve_branch_rule(entry, repo_root, process_all)
         if not log_branch:
             branches = entry_branches(entry)
-            checkout = checkout_branch(repo_root)
             print(
-                f"[notion-update] 건너뜀 — 브랜치 불일치 "
-                f"(checkout={checkout}, 규칙={branches or '없음'}): {entry.get('md')}"
+                f"[notion-update] 건너뜀 — 규칙에 적힌 브랜치를 저장소에서 찾을 수 없음 "
+                f"(규칙={branches or '없음'}, origin/ 도 확인함): {entry.get('md')}"
             )
             continue
+
+        checkout = checkout_branch(repo_root)
+        if log_branch != checkout:
+            print(f"[notion-update] {log_branch} 기준으로 읽는다 (현재 checkout={checkout})")
 
         md_path = ensure_project_md(entry, dry_run)
         if md_path is None:
