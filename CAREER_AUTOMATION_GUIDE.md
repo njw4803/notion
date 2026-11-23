@@ -266,7 +266,37 @@ projects:
 | `update_detail_on_tag.sh` | `update: always` + checkout 브랜치 **매칭**만 |
 | `... --rebuild-compressed` | 위 대상의 커밋 전체 **다시 압축** |
 | `... --all --rebuild-compressed` | `update: manual`·`always` **전체** (과거 일괄) |
-| `... --dry-run` | 미리보기만 |
+| `... --dry-run` | 미리보기만 (MD·state 저장도 Notion 동기화도 하지 않음) |
+| `... --dry-run --print-body` | `template: features` — 새로 만들 MD 본문까지 출력 |
+| `... --projects 다른설정.yaml` | `git_projects.yaml` 대신 그 파일로 실행 (설정을 바꾸기 전 미리보기) |
+| `... --no-fetch` | `template: features` — `git fetch` 없이 받아 둔 origin ref 로 읽기 |
+
+### 큰 기능 단위 방식 — `template: features` (저장소 여러 개)
+
+커밋 제목을 이력서에 그대로 싣지 않고, **큰 기능 단위로 써 둔 글**을 싣는 방식입니다.
+커밋은 "이 기능에 내 작업이 있는가" 를 세는 데만 씁니다.
+
+```yaml
+projects:
+  - md: content/Projects/내 프로젝트.md
+    template: features
+    features: features/내프로젝트.yaml   # 기능 목록 (글 + 커밋 규칙) — features.example.yaml 참고
+    update: always
+    repos:                               # 저장소 여러 개. origin/<branch> 를 먼저 읽는다
+      - { name: BE, path: .., branch: develop-main }
+      - { name: FE, path: /path/to/frontend, branch: develop }
+```
+
+| 무엇 | 어디서 |
+|------|--------|
+| 담당 업무(기능 제목 + 설명) · 사용 기술 · 얻은 것 | **기능 목록 파일**에서 고친다. MD 의 그 구역은 실행 때마다 다시 쓴다 |
+| 소개 문단(Project Description) · frontmatter(한 줄 소개, skills …) | MD 에서 직접 고친다 (그대로 유지) |
+| 커밋을 어느 기능으로 셀지 | 기능 목록의 `match` (scope → type → 제목 정규식 → fallback scope → 저장소 순) |
+
+- 내 커밋이 한 건도 없는 기능은 이력서에서 빠집니다.
+- 어느 기능에도 안 걸린 커밋은 이력서에 싣지 않고 로그에 **미분류**로만 나옵니다. 새 큰 기능을 시작했다는 신호이니, 그때 기능 목록에 항목을 더합니다.
+- 로컬 브랜치가 아니라 `origin/<branch>` 를 먼저 읽습니다 (실행 때 `git fetch`). 다른 작업 폴더에서 merge·push 한 커밋도 빠지지 않습니다.
+- Notion 에서는 기능 제목이 굵은 글머리표, 설명이 그 아래 하위 글머리표로 보입니다.
 
 ---
 

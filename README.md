@@ -5,8 +5,8 @@
 동료에게 전달할 때:
 
 - **문서:** `CAREER_AUTOMATION_GUIDE.md` (이 파일)
-- **도구:** 스크립트, `content/` 기본 틀, `config.example.env`, `git_projects.example.yaml`, `githooks/`, `launchd/`, `requirements.txt`
-- **제외:** `.env`, **채워진** `content/`, `git_projects.yaml`, `.*.json`, `.venv/`
+- **도구:** 스크립트, `content/` 기본 틀, `config.example.env`, `git_projects.example.yaml`, `features.example.yaml`, `githooks/`, `launchd/`, `requirements.txt`
+- **제외:** `.env`, **채워진** `content/`, `git_projects.yaml`, `features/`(내 기능 목록), `.*.json`, `.venv/`
 
 ```bash
 ./notion/setup.sh

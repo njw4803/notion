@@ -5,6 +5,8 @@ git 저장소 커밋을 읽어 경력 MD(Projects)를 갱신합니다.
 - git_projects.yaml 에 프로젝트·저장소 경로 등록 (과거 프로젝트는 update: manual)
 - 대상 브랜치: git_projects.yaml 의 branch/branches 규칙 (지금 checkout 된 브랜치와 무관하게 읽는다)
 - --all --rebuild-compressed 로 update=manual·always 프로젝트 일괄 압축
+- template: features — 여러 저장소(repos)의 내 커밋을 큰 기능 단위로 세고,
+  이력서 글은 기능 목록 파일(features/*.yaml)에 적어 둔 것을 쓴다 (커밋 제목을 그대로 싣지 않는다)
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -125,6 +127,21 @@ LEARNING_SECTIONS: list[tuple[frozenset[str], str]] = [
 LEARNING_TITLE = "SyncBox 백엔드·플랫폼 개발"
 
 
+FEATURE_TEMPLATE = "features"
+GIT_FETCH_TIMEOUT = 60  # 초. launchd 에서 네트워크가 막혀도 주간 실행이 멈추지 않게 한다.
+MAX_UNMATCHED_SHOWN = 15
+
+
+@dataclass
+class RepoRef:
+    """template: features 가 읽는 저장소 하나."""
+
+    name: str  # 기능 목록의 repos 규칙 · 로그에 쓰는 이름 (예: BE, FE)
+    root: Path
+    branch: str  # 규칙에 적힌 브랜치 이름
+    ref: str  # 실제로 읽는 ref (origin/<branch> 가 있으면 그것, 없으면 로컬 브랜치)
+
+
 @dataclass
 class ProjectGitConfig:
     md_path: Path
@@ -136,6 +153,8 @@ class ProjectGitConfig:
     project_name: str
     if_missing: str
     entry: dict[str, Any]
+    repos: list[RepoRef] = field(default_factory=list)
+    features_path: Path | None = None
 
 
 def resolve_repo_path(repo: str) -> Path:
@@ -301,7 +320,98 @@ def ensure_project_md(entry: dict[str, Any], dry_run: bool) -> Path | None:
     return md_path
 
 
-def build_project_configs(process_all: bool, dry_run: bool = False) -> list[ProjectGitConfig]:
+def resolve_remote_first_ref(repo_root: Path, branch: str, fetch: bool) -> str | None:
+    """여러 저장소를 읽을 때는 원격 브랜치(origin/<branch>)를 먼저 본다.
+
+    로컬 브랜치는 pull 하지 않으면 그대로라, 다른 작업 폴더에서 merge·push 한 커밋이 빠진다.
+    (2026-11-22 로컬 develop-main 이 origin 보다 58 커밋 뒤처져 있었다.)
+    fetch 가 실패해도(오프라인·인증 없음) 마지막으로 받아 둔 origin ref 를 그대로 읽는다.
+    """
+    if fetch:
+        try:
+            run_git(
+                "fetch", "--quiet", "origin", branch,
+                cwd=repo_root, timeout=GIT_FETCH_TIMEOUT, no_prompt=True,
+            )
+        except RuntimeError as exc:
+            reason = (str(exc).splitlines() or ["알 수 없는 오류"])[0]
+            print(f"[notion-update] fetch 실패 — 받아 둔 ref 로 읽는다 ({repo_root.name} {branch}): {reason}")
+    for ref in (f"origin/{branch}", branch):
+        try:
+            if run_git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", cwd=repo_root):
+                return ref
+        except RuntimeError:
+            continue
+    return None
+
+
+def build_feature_config(entry: dict[str, Any], dry_run: bool, fetch: bool) -> ProjectGitConfig | None:
+    """repos(저장소 여러 개) + features(기능 목록 파일)를 쓰는 항목."""
+    md_path = ensure_project_md(entry, dry_run)
+    if md_path is None:
+        return None
+
+    features_rel = str(entry.get("features") or "").strip()
+    if not features_rel:
+        print(
+            f"[notion-update] 건너뜀 — repos 를 쓰는 항목에는 features(기능 목록 파일)가 필요: {entry.get('md')}",
+            file=sys.stderr,
+        )
+        return None
+    features_path = Path(features_rel) if features_rel.startswith("/") else ROOT / features_rel
+    if not features_path.is_file():
+        print(f"[notion-update] 건너뜀 — 기능 목록 파일 없음: {features_path}", file=sys.stderr)
+        return None
+
+    repos: list[RepoRef] = []
+    for item in entry["repos"]:
+        if isinstance(item, str):
+            item = {"path": item}
+        path = str(item.get("path") or item.get("repo") or "").strip()
+        branch = str(item.get("branch") or DEFAULT_BRANCH).strip()
+        root = resolve_repo_path(path) if path else None
+        name = str(item.get("name") or (root.name if root else path)).strip()
+        if root is None or not (root / ".git").exists():
+            print(f"[notion-update] 저장소 건너뜀 — git 저장소 아님: {name} ({root})", file=sys.stderr)
+            continue
+        ref = resolve_remote_first_ref(root, branch, fetch)
+        if not ref:
+            print(
+                f"[notion-update] 저장소 건너뜀 — 브랜치를 찾을 수 없음: {name} {branch} (origin/ 도 확인함)",
+                file=sys.stderr,
+            )
+            continue
+        repos.append(RepoRef(name=name, root=root, branch=branch, ref=ref))
+    if not repos:
+        print(f"[notion-update] 건너뜀 — 읽을 수 있는 저장소가 없음: {entry.get('md')}", file=sys.stderr)
+        return None
+
+    if md_path.is_file():
+        meta = frontmatter.load(md_path).metadata
+        project_name = str(meta.get("project_name") or md_path.stem)
+        since = str(entry.get("since") or meta.get("period_start") or "").strip()
+        until = str(entry.get("until") or meta.get("period_end") or "").strip()
+    else:
+        project_name = str(entry.get("project_name") or md_path.stem)
+        since = str(entry.get("since") or entry.get("period_start") or "").strip()
+        until = str(entry.get("until") or entry.get("period_end") or "").strip()
+
+    return ProjectGitConfig(
+        md_path=md_path,
+        repo_root=repos[0].root,
+        branch=repos[0].ref,
+        template=FEATURE_TEMPLATE,
+        since=since,
+        until=until,
+        project_name=project_name,
+        if_missing=str(entry.get("if_missing") or "skip").lower(),
+        entry=entry,
+        repos=repos,
+        features_path=features_path,
+    )
+
+
+def build_project_configs(process_all: bool, dry_run: bool = False, fetch: bool = True) -> list[ProjectGitConfig]:
     entries = load_git_projects_yaml()
     if not entries:
         raise FileNotFoundError(
@@ -313,6 +423,12 @@ def build_project_configs(process_all: bool, dry_run: bool = False) -> list[Proj
     configs: list[ProjectGitConfig] = []
     for entry in entries:
         if not should_include_for_run(entry, process_all):
+            continue
+
+        if entry.get("repos"):
+            feature_config = build_feature_config(entry, dry_run, fetch)
+            if feature_config:
+                configs.append(feature_config)
             continue
 
         repo_root = resolve_repo_path(str(entry.get("repo", "..")))
@@ -388,13 +504,22 @@ def set_project_state(state: dict, key: str, proj_state: dict) -> dict:
     return state
 
 
-def run_git(*args: str, cwd: Path | None = None) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(cwd or REPO_ROOT), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def run_git(*args: str, cwd: Path | None = None, timeout: int | None = None, no_prompt: bool = False) -> str:
+    env = None
+    if no_prompt:
+        # 자격 증명을 물으며 멈추지 않게 한다 (launchd 에는 답할 사람이 없다).
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(cwd or REPO_ROOT), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"git {' '.join(args)}: {timeout}초 안에 끝나지 않음") from exc
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"git failed: {' '.join(args)}")
     return result.stdout.strip()
@@ -745,14 +870,19 @@ def rebuild_body(
     detail_manual: list[str],
     stack_lines: list[str],
     learning_lines: list[str],
+    duty_lines: list[str] | None = None,
 ) -> str:
+    """duty_lines 를 주면 담당 업무 구역에 그 줄들을 그대로 쓴다 (들여쓴 하위 글머리표 포함)."""
     parts: list[str] = []
     if layout == "description":
         parts.append("Project Description")
     parts.extend(intro)
     parts.append("")
     parts.append("담당 업무")
-    parts.extend(f"- {bullet.lstrip('- ').strip()}" for bullet in bullets if bullet.strip())
+    if duty_lines is not None:
+        parts.extend(line.rstrip() for line in duty_lines if line.strip())
+    else:
+        parts.extend(f"- {bullet.lstrip('- ').strip()}" for bullet in bullets if bullet.strip())
     parts.append("")
     parts.append("### 프로젝트 상세 내용")
     parts.append("")
@@ -872,6 +1002,331 @@ def existing_stack_fallback(detail_lines: list[str]) -> list[str]:
         elif in_stack and stripped and not stripped.startswith("- "):
             break
     return stack
+
+
+# ---------------------------------------------------------------------------
+# template: features — 여러 저장소의 내 커밋을 큰 기능 단위로 센다
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FeatureRule:
+    id: str
+    title: str
+    points: list[str]
+    scopes: set[str]
+    types: set[str]
+    subject: list[re.Pattern[str]]
+    fallback_scopes: set[str]
+    repos: set[str]
+
+
+@dataclass
+class FeatureCatalog:
+    features: list[FeatureRule]
+    ignore_types: set[str]
+    ignore_subject: list[re.Pattern[str]]
+    stack: list[str]
+    learnings: list[dict[str, Any]]
+
+
+COMMIT_HEAD_RE = re.compile(r"^([A-Za-z]+)(?:\(([^)]*)\))?!?:\s*")
+
+
+def _lower_set(values: Any) -> set[str]:
+    return {str(value).strip().lower() for value in (values or []) if str(value).strip()}
+
+
+def _patterns(values: Any) -> list[re.Pattern[str]]:
+    return [re.compile(str(value), re.I) for value in (values or []) if str(value).strip()]
+
+
+def load_feature_catalog(path: Path) -> FeatureCatalog:
+    if yaml is None:
+        raise RuntimeError("PyYAML 필요: pip install pyyaml")
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    features: list[FeatureRule] = []
+    for raw in data.get("features") or []:
+        title = str(raw.get("title") or "").strip()
+        if not title:
+            raise ValueError(f"기능 목록에 title 이 없는 항목이 있습니다: {path.name}")
+        match = raw.get("match") or {}
+        features.append(
+            FeatureRule(
+                id=str(raw.get("id") or title).strip(),
+                title=title,
+                points=[str(point).strip() for point in (raw.get("points") or []) if str(point).strip()],
+                scopes=_lower_set(match.get("scopes")),
+                types=_lower_set(match.get("types")),
+                subject=_patterns(match.get("subject")),
+                fallback_scopes=_lower_set(match.get("fallback_scopes")),
+                repos={str(value).strip() for value in (match.get("repos") or []) if str(value).strip()},
+            )
+        )
+    if not features:
+        raise ValueError(f"기능 목록이 비어 있습니다: {path.name}")
+    ignore = data.get("ignore") or {}
+    return FeatureCatalog(
+        features=features,
+        ignore_types=_lower_set(ignore.get("types")),
+        ignore_subject=_patterns(ignore.get("subject")),
+        stack=[str(line).strip() for line in (data.get("stack") or []) if str(line).strip()],
+        learnings=[item for item in (data.get("learnings") or []) if isinstance(item, dict)],
+    )
+
+
+def commit_type_scope(subject: str) -> tuple[str, str]:
+    """'feat(chat): ...' → ('feat', 'chat'). 형식이 아니면 ('', '')."""
+    match = COMMIT_HEAD_RE.match(subject.strip())
+    if not match:
+        return "", ""
+    return match.group(1).lower(), (match.group(2) or "").strip().lower()
+
+
+def classify_commit(commit: dict, catalog: FeatureCatalog) -> FeatureRule | None:
+    """커밋 하나를 기능에 건다. 순위는 scope → type → 제목 정규식 → fallback scope → 저장소."""
+    subject = commit["subject"]
+    ctype, scope = commit_type_scope(subject)
+    if scope:
+        for feature in catalog.features:
+            if scope in feature.scopes:
+                return feature
+    if ctype:
+        for feature in catalog.features:
+            if ctype in feature.types:
+                return feature
+    for feature in catalog.features:
+        if any(pattern.search(subject) for pattern in feature.subject):
+            return feature
+    if scope:
+        for feature in catalog.features:
+            if scope in feature.fallback_scopes:
+                return feature
+    for feature in catalog.features:
+        if commit["repo"] in feature.repos:
+            return feature
+    return None
+
+
+def is_ignored_commit(commit: dict, catalog: FeatureCatalog) -> bool:
+    """기능에 안 걸렸지만 미분류로 알릴 필요도 없는 잡일 커밋."""
+    ctype, _ = commit_type_scope(commit["subject"])
+    if ctype and ctype in catalog.ignore_types:
+        return True
+    return any(pattern.search(commit["subject"]) for pattern in catalog.ignore_subject)
+
+
+def list_author_commits(repo: RepoRef, author: str, since: str, until: str) -> list[dict]:
+    """그 저장소 ref 에서 내 커밋(merge 제외) 전부 — 최신이 먼저."""
+    args = ["log", "--no-merges", f"--author={author}", "--date=short", "--pretty=format:%H%x1f%ad%x1f%s"]
+    if since:
+        args.append(f"--since={since}")
+    until_ex = git_until_exclusive(until) if until else ""
+    if until_ex:
+        args.append(f"--until={until_ex}")
+    args.append(repo.ref)
+    raw = run_git(*args, cwd=repo.root)
+    commits: list[dict] = []
+    for line in raw.splitlines():
+        parts = line.split("\x1f", 2)
+        if len(parts) != 3:
+            continue
+        commits.append({"sha": parts[0], "date": parts[1], "subject": parts[2], "repo": repo.name})
+    return commits
+
+
+def count_new_commits(repo: RepoRef, author: str, last_commit: str) -> int | None:
+    """지난 실행 뒤에 생긴 내 커밋 수. 지난 커밋을 모르거나 저장소에 없으면 None (전부 새 것으로 본다)."""
+    if not last_commit:
+        return None
+    try:
+        run_git("cat-file", "-e", f"{last_commit}^{{commit}}", cwd=repo.root)
+        count = run_git(
+            "rev-list", "--count", "--no-merges", f"--author={author}", f"{last_commit}..{repo.ref}",
+            cwd=repo.root,
+        )
+        return int(count or 0)
+    except (RuntimeError, ValueError):
+        return None
+
+
+def stack_facts(repo: RepoRef, tag: str) -> dict[str, str]:
+    """기능 목록 stack 줄의 {java} {spring_boot} {spark} {tag} 자리를 채울 값 — 읽는 ref 의 build.gradle 기준."""
+    try:
+        gradle = run_git("show", f"{repo.ref}:build.gradle", cwd=repo.root)
+    except RuntimeError:
+        gradle = ""
+    spring = re.search(r"id\s+'org\.springframework\.boot'\s+version\s+'([^']+)'", gradle)
+    toolchain = re.search(r"jvmToolchain\((\d+)\)", gradle)
+    spark = re.search(r"spark-core_2\.12',\s+version:\s+'([^']+)'", gradle)
+    return {
+        "java": toolchain.group(1) if toolchain else "11",
+        "spring_boot": spring.group(1) if spring else "2.7.x",
+        "spark": spark.group(1) if spark else "3.5.x",
+        "tag": tag,
+    }
+
+
+def render_stack_lines(templates: list[str], facts: dict[str, str]) -> list[str]:
+    lines: list[str] = []
+    for template in templates:
+        if "{tag}" in template and not facts.get("tag"):
+            continue
+        text = template
+        for key, value in facts.items():
+            text = text.replace("{" + key + "}", value)
+        text = text.strip()
+        lines.append(text if text.startswith("- ") else f"- {text}")
+    return lines
+
+
+def render_feature_duties(features: list[FeatureRule]) -> list[str]:
+    """담당 업무 — 기능 제목(굵게) 아래에 설명 줄을 들여쓴다."""
+    lines: list[str] = []
+    for feature in features:
+        lines.append(f"- **{feature.title}**")
+        lines.extend(f"  - {point}" for point in feature.points)
+    return lines
+
+
+def render_learning_lines(learnings: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in learnings:
+        title = str(item.get("title") or "").strip()
+        body = str(item.get("body") or "").strip()
+        if title:
+            lines.append(f"**{title}**")
+        lines.extend(line.strip() for line in body.splitlines() if line.strip())
+    return lines
+
+
+def update_feature_project(
+    config: ProjectGitConfig,
+    state: dict,
+    rebuild: bool,
+    dry_run: bool,
+    print_body: bool,
+) -> tuple[dict, bool]:
+    assert config.features_path is not None
+    key = project_state_key(config.md_path)
+    proj_state = get_project_state(state, key)
+    repo_states = proj_state.get("repos") if isinstance(proj_state.get("repos"), dict) else {}
+    catalog = load_feature_catalog(config.features_path)
+    tag = latest_semver_tag(config.repos[0].root)
+
+    all_commits: list[dict] = []
+    heads: dict[str, dict[str, str]] = {}
+    repo_summary: list[str] = []
+    new_total = 0
+    new_unknown = False
+    for repo in config.repos:
+        author = git_author(repo.root)
+        commits = list_author_commits(repo, author, config.since, config.until)
+        all_commits.extend(commits)
+        heads[repo.name] = {
+            "ref": repo.ref,
+            "last_processed_commit": run_git("rev-parse", repo.ref, cwd=repo.root),
+            "author": author,
+        }
+        last_commit = str((repo_states.get(repo.name) or {}).get("last_processed_commit") or "")
+        new_count = count_new_commits(repo, author, last_commit)
+        if new_count is None:
+            new_unknown = True
+        else:
+            new_total += new_count
+        new_note = f", 새 {new_count}" if new_count else ""
+        repo_summary.append(f"{repo.name}({repo.ref}) {len(commits)}{new_note}")
+
+    counts = {feature.id: 0 for feature in catalog.features}
+    unmatched: list[dict] = []
+    for commit in all_commits:
+        feature = classify_commit(commit, catalog)
+        if feature is not None:
+            counts[feature.id] += 1
+        elif not is_ignored_commit(commit, catalog):
+            unmatched.append(commit)
+    active = [feature for feature in catalog.features if counts[feature.id] > 0]
+
+    if config.md_path.is_file():
+        post = frontmatter.load(config.md_path)
+        body = ensure_auto_markers(post.content)
+        layout, intro, _, detail_lines, _ = parse_sections_from_body(body)
+        current_body = post.content.strip()
+    else:
+        post = None
+        layout = "description"
+        intro = [str(config.entry.get("description") or config.project_name)]
+        detail_lines = []
+        current_body = ""
+    new_body = rebuild_body(
+        layout,
+        intro,
+        [],
+        manual_detail_lines(detail_lines),
+        render_stack_lines(catalog.stack, stack_facts(config.repos[0], tag)),
+        render_learning_lines(catalog.learnings),
+        duty_lines=render_feature_duties(active),
+    )
+    text_changed = new_body.strip() != current_body
+    tag_changed = bool(tag) and tag != proj_state.get("last_tag", "")
+    has_new = new_unknown or new_total > 0
+
+    print(
+        f"[notion-update] {config.project_name}: 저장소 {len(config.repos)}개에서 내 커밋 {len(all_commits)}개 — "
+        + " · ".join(repo_summary)
+    )
+    print(
+        "[notion-update]   기능별 커밋: "
+        + " · ".join(f"{feature.id} {counts[feature.id]}" for feature in catalog.features)
+    )
+    skipped = [feature.id for feature in catalog.features if counts[feature.id] == 0]
+    if skipped:
+        print(f"[notion-update]   내 커밋이 없어 이력서에서 뺀 기능: {', '.join(skipped)}")
+    if unmatched:
+        unmatched.sort(key=lambda item: item["date"], reverse=True)
+        print(
+            f"[notion-update]   미분류 {len(unmatched)}개 (이력서에는 싣지 않음) — "
+            f"새 큰 기능이면 {config.features_path.name} 에 더할 것:"
+        )
+        for commit in unmatched[:MAX_UNMATCHED_SHOWN]:
+            print(f"[notion-update]     · {commit['repo']} {commit['date']} {truncate(commit['subject'], 100)}")
+        if len(unmatched) > MAX_UNMATCHED_SHOWN:
+            print(f"[notion-update]     … 외 {len(unmatched) - MAX_UNMATCHED_SHOWN}개")
+
+    if not (has_new or tag_changed or text_changed or rebuild):
+        print(f"[notion-update] {config.project_name}: 새 커밋 없음 · 본문 변화 없음")
+        return state, False
+    print(
+        f"[notion-update] {config.project_name}: "
+        + ("본문이 바뀜" if text_changed else "본문은 그대로 (새 커밋만 있음)")
+        + f", 실린 기능 {len(active)}개"
+    )
+    if print_body:
+        print("----- 새 MD 본문 -----")
+        print(new_body.rstrip())
+        print("----- 끝 -----")
+
+    if dry_run:
+        return state, True
+
+    if post is None:
+        create_project_md(config.md_path, config.entry)
+        post = frontmatter.load(config.md_path)
+    if text_changed:
+        post.content = new_body
+        config.md_path.write_text(frontmatter.dumps(post), encoding="utf-8")
+        print(f"[notion-update] {config.project_name}: MD 저장 완료")
+    state = set_project_state(
+        state,
+        key,
+        {
+            "template": FEATURE_TEMPLATE,
+            "repos": heads,
+            "last_tag": tag,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    return state, True
 
 
 def update_one_project(
@@ -1001,15 +1456,38 @@ def main() -> int:
         action="store_true",
         help="브랜치 매칭 무시, git_projects.yaml 전체 항목 처리 (update=manual 포함)",
     )
-    parser.add_argument("--dry-run", action="store_true", help="MD·state 저장 없이 변경 요약만 출력")
+    parser.add_argument("--dry-run", action="store_true", help="MD·state 저장도 Notion 동기화도 없이 변경 요약만 출력")
     parser.add_argument("--no-sync", action="store_true", help="갱신 후 Notion 동기화 생략")
+    parser.add_argument(
+        "--print-body",
+        action="store_true",
+        help="template: features — 새로 만든 MD 본문을 출력 (--dry-run 과 함께 미리보기)",
+    )
+    parser.add_argument(
+        "--no-fetch",
+        action="store_true",
+        help="template: features — git fetch 를 건너뛰고 받아 둔 origin ref 로 읽는다",
+    )
+    parser.add_argument(
+        "--projects",
+        metavar="FILE",
+        help="git_projects.yaml 대신 읽을 설정 파일 (notion/ 기준 상대 경로 가능) — 설정을 바꾸기 전 미리보기용",
+    )
     args = parser.parse_args()
+
+    if args.projects:
+        global GIT_PROJECTS_FILE
+        projects_path = Path(args.projects).expanduser()
+        GIT_PROJECTS_FILE = projects_path if projects_path.is_absolute() else ROOT / projects_path
+        if not GIT_PROJECTS_FILE.is_file():
+            print(f"[notion-update] 설정 파일 없음: {GIT_PROJECTS_FILE}", file=sys.stderr)
+            return 1
 
     rebuild = args.rebuild_compressed or args.backfill
     load_env()
 
     try:
-        configs = build_project_configs(process_all=args.all, dry_run=args.dry_run)
+        configs = build_project_configs(process_all=args.all, dry_run=args.dry_run, fetch=not args.no_fetch)
     except FileNotFoundError as exc:
         print(f"[notion-update] {exc}", file=sys.stderr)
         return 1
@@ -1020,9 +1498,12 @@ def main() -> int:
     state = read_state()
     updated = 0
     for config in configs:
-        author = git_author(config.repo_root)
         try:
-            state, changed = update_one_project(config, state, author, rebuild, args.dry_run)
+            if config.template == FEATURE_TEMPLATE:
+                state, changed = update_feature_project(config, state, rebuild, args.dry_run, args.print_body)
+            else:
+                author = git_author(config.repo_root)
+                state, changed = update_one_project(config, state, author, rebuild, args.dry_run)
             if changed:
                 updated += 1
         except Exception as exc:
@@ -1036,6 +1517,11 @@ def main() -> int:
         return 0
 
     print(f"[notion-update] 완료 — {updated}/{len(configs)}개 프로젝트 갱신")
+
+    if args.dry_run:
+        # 미리보기는 Notion 에 쓰지 않는다. (전에는 --no-sync 를 같이 주지 않으면 동기화가 그대로 돌았다.)
+        print("[notion-update] (dry-run) Notion 동기화 생략")
+        return 0
 
     if args.no_sync or not os.environ.get("NOTION_TOKEN"):
         if not os.environ.get("NOTION_TOKEN"):

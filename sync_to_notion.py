@@ -6,6 +6,7 @@ import argparse
 from typing import Optional
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -124,6 +125,31 @@ def rich_text(text: str):
     return [{"type": "text", "text": {"content": text[:2000]}}]
 
 
+BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def rich_text_md(text: str):
+    """'**굵게**' 로 감싼 부분만 굵은 글씨로 바꾼다. 짝이 맞는 ** 가 없으면 rich_text 와 같다."""
+    if not text or "**" not in text:
+        return rich_text(text)
+    items = []
+    position = 0
+    for match in BOLD_RE.finditer(text):
+        if match.start() > position:
+            items.append({"type": "text", "text": {"content": text[position:match.start()][:2000]}})
+        items.append({
+            "type": "text",
+            "text": {"content": match.group(1)[:2000]},
+            "annotations": {"bold": True},
+        })
+        position = match.end()
+    if not items:
+        return rich_text(text)
+    if position < len(text):
+        items.append({"type": "text", "text": {"content": text[position:][:2000]}})
+    return items
+
+
 def paragraph_block(text: str):
     return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": rich_text(text)}}
 
@@ -132,7 +158,7 @@ def bullet_block(text: str):
     return {
         "object": "block",
         "type": "bulleted_list_item",
-        "bulleted_list_item": {"rich_text": rich_text(text)},
+        "bulleted_list_item": {"rich_text": rich_text_md(text)},
     }
 
 
@@ -477,8 +503,9 @@ def append_single_block(parent_id: str, block: dict):
         json={"children": [payload]},
     )
     block_id = created["results"][0]["id"]
-    for child in children:
-        append_single_block(block_id, child)
+    if children:
+        # 하위 블록은 한 번에 묶어 보낸다 (하위에 또 하위가 있는 것만 따로). 전에는 하나씩 보냈다.
+        append_blocks(block_id, children)
 
 
 def _append_payload_batch(parent_id: str, payloads: list):
@@ -582,7 +609,8 @@ def parse_project_markdown(content: str, meta: dict):
             elif section == "learnings":
                 learnings.append(bullet_line)
             else:
-                bullets.append(bullet_line.lstrip()[2:].strip())
+                # 들여쓰기를 그대로 둔다 — 담당 업무의 하위 글머리표(기능 제목 아래 설명)를 살리기 위해.
+                bullets.append(bullet_line)
         elif section == "intro":
             intro.append(stripped)
         elif section == "detail":
@@ -605,7 +633,7 @@ def build_project_blocks(layout: str, intro: list, bullets: list, detail: list, 
         blocks.append(paragraph_block(one_liner or project_name))
     blocks.append(paragraph_block(""))
     blocks.append(blue_paragraph_block("담당 업무"))
-    blocks.extend(bullet_block(bullet) for bullet in bullets)
+    blocks.extend(md_lines_to_bullet_blocks(bullets))
 
     detail_callout = md_lines_to_detail_callout(detail)
     learning_callouts = md_lines_to_learning_callouts(learnings)
