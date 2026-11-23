@@ -1,7 +1,25 @@
+# 미리보기: ./notion/update_detail_on_tag.sh --dry-run --print-body   (Notion 에 쓰지 않는다)
 projects:
-  - branch: develop-main
-    repo: ..
-    md: content/Projects/(주)도로시 Solution SyncBox.md
-    template: syncbox
+  # 현재 프로젝트 — 여러 저장소의 내 커밋을 큰 기능 단위(features/syncbox.yaml)로 묶는다.
+  # 이력서 글은 features/syncbox.yaml 에서 고친다. 저장소는 origin/<branch> 를 먼저 읽는다.
+  - md: content/Projects/(주)도로시 Solution SyncBox.md
+    template: features
+    features: features/syncbox.yaml
     update: always
     if_missing: skip
+    repos:
+      - name: BE
+        path: ..
+        branch: develop-main
+      - name: FE
+        path: ~/SYNCBOX_FE
+        branch: develop
+      - name: MONITORING
+        path: ~/Developer/SYNCBOX_MONITORING
+        branch: main
+      - name: EMBED
+        path: ~/EMBED
+        branch: main
+      - name: NAVER_BOT
+        path: ~/NAVER_BOT_NOTICE
+        branch: master
