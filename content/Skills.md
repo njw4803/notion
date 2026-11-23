@@ -8,11 +8,14 @@ title: Skills.
 - Java
 - Spring Framework, Spring Boot, Spring Security
 - MyBatis
+- Python, FastAPI
 - Gradle, Maven
 
 ### DevOps
 
 - Docker
+- GitHub Actions
+- Prometheus
 
 ### Big Data
 
@@ -21,12 +24,12 @@ title: Skills.
 
 ### DataBase
 
-- MariaDB, MySQL, Oracle, MS SQL
+- PostgreSQL, MariaDB, MySQL, Oracle, MS SQL
 - Redis
 
 ### Front-End
 
-- HTML5/CSS, javascript, React
+- HTML5/CSS, javascript, TypeScript, React
 
 ### Tools
 
